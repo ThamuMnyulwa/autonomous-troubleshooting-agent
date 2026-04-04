@@ -1,0 +1,41 @@
+# Copy to terraform.tfvars and fill in values.
+# NEVER commit terraform.tfvars to version control.
+
+location      = "westeurope"
+environment   = "dev"
+name_prefix   = "pipeline-resolver"
+
+# Container images. These can point at public images or a private registry.
+intake_image = "myregistry.azurecr.io/pipeline-resolver/intake:latest"
+worker_image = "myregistry.azurecr.io/pipeline-resolver/worker:latest"
+
+# Optional if using a private Azure Container Registry with Managed Identity.
+container_registry_server      = "myregistry.azurecr.io"
+container_registry_resource_id = "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ContainerRegistry/registries/myregistry"
+
+# Secrets stored in Key Vault by Terraform
+google_api_key          = "AIza..."
+database_url            = "postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/neondb?sslmode=require"
+ado_pat                 = "your-ado-pat"
+ado_service_hook_secret = "your-hmac-secret"
+databricks_token        = "dapi..."
+azure_client_secret     = ""
+
+# Non-secret application configuration
+ado_org_url             = "https://dev.azure.com/your-org"
+ado_project             = "YourProject"
+ado_area_path           = ""
+databricks_host         = "https://adb-xxx.azuredatabricks.net"
+databricks_warehouse_id = ""
+databricks_mcp_url      = "https://adb-xxx.azuredatabricks.net/api/2.0/mcp/sql"
+azure_tenant_id         = ""
+azure_client_id         = ""
+
+# Runtime tuning
+azure_service_bus_queue_name         = "agent-runs"
+azure_service_bus_receive_wait_seconds = 5
+azure_service_bus_lock_renewal_seconds = 3600
+max_iterations                       = 5
+max_attempts                         = 3
+checkpoint_ttl_days                  = 7
+worker_schedule_cron_expression      = "*/1 * * * *"
