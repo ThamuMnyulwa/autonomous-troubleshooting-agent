@@ -37,6 +37,10 @@ RunAction = Literal["investigate", "resume"]
 CommentAction = Literal["approve", "retry", "ignore"]
 
 
+class QueueUnavailableError(RuntimeError):
+    """Raised when a webhook requires queueing but the queue transport is unavailable."""
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     structlog.configure(
@@ -82,8 +86,13 @@ async def health() -> dict[str, str]:
 async def ado_webhook(request: Request) -> Response:
     body = await request.body()
 
-    sig = request.headers.get("X-Hub-Signature")
-    if not validate_service_hook_signature(body, sig):
+    # ADO Service Hooks: validate via shared secret header or HMAC signature
+    webhook_secret = request.headers.get("X-Webhook-Secret")
+    hmac_sig = request.headers.get("X-Hub-Signature")
+    if webhook_secret:
+        if webhook_secret != settings.ado_service_hook_secret:
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    elif not validate_service_hook_signature(body, hmac_sig):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
@@ -106,12 +115,15 @@ async def ado_webhook(request: Request) -> Response:
 
     log.info("intake.webhook_received", event_type=event_type, work_item_id=work_item_id)
 
-    if event_type == "workitem.created":
-        await _handle_created(payload)
-    elif event_type == "workitem.commented":
-        await _handle_commented(payload)
-    else:
-        log.debug("intake.event_ignored", event_type=event_type)
+    try:
+        if event_type == "workitem.created":
+            await _handle_created(payload)
+        elif event_type == "workitem.commented":
+            await _handle_commented(payload)
+        else:
+            log.debug("intake.event_ignored", event_type=event_type)
+    except QueueUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return Response(content='{"status":"queued"}', media_type="application/json")
 
@@ -176,8 +188,12 @@ async def _handle_commented(payload: dict) -> None:
 
 async def _enqueue(run: dict, *, action: RunAction) -> None:
     if not is_queue_configured():
-        log.warning("intake.queue_not_configured", run_id=run["run_id"], action=action)
-        return
+        msg = (
+            "Azure Service Bus is not configured, so the worker run could not be queued. "
+            "Set AZURE_SERVICE_BUS_CONNECTION_STRING or AZURE_SERVICE_BUS_NAMESPACE."
+        )
+        log.error("intake.queue_not_configured", run_id=run["run_id"], action=action)
+        raise QueueUnavailableError(msg)
 
     await publish_run_message(build_run_message(run, action=action))
     log.info(

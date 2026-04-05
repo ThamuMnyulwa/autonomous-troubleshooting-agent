@@ -1,5 +1,6 @@
 .terraform/
 terraform.tfstate
 terraform.tfstate.*
-terraform.tfvars
-modules/
+*.tfplan
+*.tfvars
+!*.tfvars.example

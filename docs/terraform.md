@@ -48,7 +48,21 @@ What stays outside Terraform
 - Databricks Job webhook configuration
 - MCP server npm packages and container image builds
 
-Implementation note
+Remote state
 
-- The repository runtime code now targets Azure Service Bus and Azure-hosted compute.
-- The existing `infra/` Terraform still reflects the older GCP deployment and should be replaced with `azurerm` resources before infrastructure rollout.
+- Backend: `azurerm` (Azure Blob Storage)
+- Storage account: `stmvptfstate` in `rg-tfstate-dev`
+- Container: `tfstate`
+- State key: `pipeline-resolver.tfstate`
+- Configured in `infra/versions.tf`
+
+Deploying
+
+```bash
+cd infra
+terraform init                          # connects to remote state
+terraform plan -var-file=dev.tfvars     # review changes
+terraform apply -var-file=dev.tfvars    # deploy
+```
+
+See also: [ADO Setup Guide](ado-setup.md) for Azure DevOps board and webhook configuration.

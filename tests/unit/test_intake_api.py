@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 
 from intake import api
 
@@ -68,3 +72,55 @@ async def test_handle_commented_queues_retry(monkeypatch: pytest.MonkeyPatch) ->
             "investigate",
         )
     ]
+
+
+def _make_request(body: bytes, headers: dict[str, str]) -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/webhooks/ado",
+        "headers": [(key.lower().encode(), value.encode()) for key, value in headers.items()],
+    }
+
+    delivered = False
+
+    async def receive() -> dict:
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        delivered = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+@pytest.mark.asyncio
+async def test_ado_webhook_returns_503_when_queue_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = json.dumps({"eventType": "workitem.created", "resource": {"id": 42}}).encode()
+
+    async def fake_record_processed_event(**_kwargs) -> bool:
+        return True
+
+    async def fake_handle_created(_payload: dict) -> None:
+        raise api.QueueUnavailableError("queue offline")
+
+    monkeypatch.setattr(
+        api,
+        "settings",
+        SimpleNamespace(
+            ado_service_hook_secret="shared-secret",
+            azure_service_bus_queue_name="resolver-runs",
+        ),
+    )
+    monkeypatch.setattr(api, "record_processed_event", fake_record_processed_event)
+    monkeypatch.setattr(api, "_handle_created", fake_handle_created)
+
+    request = _make_request(body, {"X-Webhook-Secret": "shared-secret"})
+
+    with pytest.raises(HTTPException) as excinfo:
+        await api.ado_webhook(request)
+
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == "queue offline"

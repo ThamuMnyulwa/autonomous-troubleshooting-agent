@@ -20,7 +20,7 @@ locals {
   )
 
   service_bus_namespace_name = var.service_bus_namespace_name != "" ? var.service_bus_namespace_name : substr(
-    replace(lower("${var.name_prefix}-${var.environment}-${random_string.suffix.result}-sb"), "/[^a-z0-9-]/", "-"),
+    replace(lower("${var.name_prefix}-${var.environment}-${random_string.suffix.result}-sbus"), "/[^a-z0-9-]/", "-"),
     0,
     50,
   )
@@ -38,16 +38,25 @@ locals {
     var.tags,
   )
 
-  key_vault_secret_values = merge(
-    {
-      "ado-pat"                 = var.ado_pat
-      "ado-service-hook-secret" = var.ado_service_hook_secret
-      "database-url"            = var.database_url
-      "databricks-token"        = var.databricks_token
-      "google-api-key"          = var.google_api_key
-    },
-    var.azure_client_secret != "" ? { "azure-client-secret" = var.azure_client_secret } : {},
-  )
+  # All possible Key Vault secret names. The set itself is non-sensitive;
+  # sensitive values are only consumed inside the resource block.
+  key_vault_secret_names = toset([
+    "ado-pat",
+    "ado-service-hook-secret",
+    "database-url",
+    "databricks-token",
+    "google-api-key",
+    "azure-client-secret",
+  ])
+
+  key_vault_secret_values = {
+    "ado-pat"                 = var.ado_pat
+    "ado-service-hook-secret" = var.ado_service_hook_secret
+    "database-url"            = var.database_url
+    "databricks-token"        = var.databricks_token
+    "google-api-key"          = var.google_api_key
+    "azure-client-secret"     = var.azure_client_secret
+  }
 
   intake_secret_names = toset([
     "ado-pat",
@@ -142,10 +151,10 @@ resource "azurerm_key_vault" "main" {
 }
 
 resource "azurerm_key_vault_secret" "app" {
-  for_each     = local.key_vault_secret_values
+  for_each     = local.key_vault_secret_names
   key_vault_id = azurerm_key_vault.main.id
-  name         = each.key
-  value        = each.value
+  name         = each.value
+  value        = local.key_vault_secret_values[each.value]
   tags         = local.tags
 }
 
