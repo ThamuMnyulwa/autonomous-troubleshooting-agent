@@ -53,7 +53,6 @@ async def get_pool() -> AsyncConnectionPool:
             min_size=settings.db_pool_min_size,
             max_size=settings.db_pool_max_size,
             open=False,
-            reconnect_attempts=3,
             reconnect_timeout=5.0,
             kwargs={"sslmode": "require"},
         )

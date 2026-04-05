@@ -16,14 +16,55 @@ import hashlib
 import hmac
 import html
 import re
+from typing import Literal
 
 import httpx
 import structlog
 
 from config import settings
+from prompts.helpers import parse_agent_metadata
 
 log = structlog.get_logger()
 _API = "7.1"
+
+AdoWorkflowStage = Literal[
+    "queued",
+    "investigating",
+    "awaiting_approval",
+    "resolved",
+    "escalated",
+]
+
+_DEFAULT_STATES_BY_WORK_ITEM_TYPE: dict[str, dict[AdoWorkflowStage, str]] = {
+    "issue": {
+        "queued": "To Do",
+        "investigating": "Doing",
+        "awaiting_approval": "Doing",
+        "resolved": "Done",
+        "escalated": "Done",
+    },
+    "task": {
+        "queued": "To Do",
+        "investigating": "Doing",
+        "awaiting_approval": "Doing",
+        "resolved": "Done",
+        "escalated": "Done",
+    },
+    "bug": {
+        "queued": "New",
+        "investigating": "Active",
+        "awaiting_approval": "Active",
+        "resolved": "Resolved",
+        "escalated": "Resolved",
+    },
+    "product backlog item": {
+        "queued": "New",
+        "investigating": "Committed",
+        "awaiting_approval": "Committed",
+        "resolved": "Done",
+        "escalated": "Done",
+    },
+}
 
 
 def _auth_header(pat: str) -> dict[str, str]:
@@ -76,7 +117,8 @@ class AdoClient:
         # Extract structured metadata from description
         desc = fields.get("System.Description", "")
         target_env  = _extract_tag(fields.get("System.Tags", ""), r"databricks|azure")
-        failure_type = _extract_meta(desc, "failure_type")
+        meta = parse_agent_metadata(desc)
+        failure_type = meta.get("failure_type", "")
 
         return {
             "id":           wi["id"],
@@ -84,6 +126,13 @@ class AdoClient:
             "fields":       fields,
             "target_env":   target_env or "databricks",
             "failure_type": failure_type or "unknown",
+            "incident_target": meta.get("incident_target", ""),
+            "alert_rule": meta.get("alert_rule", ""),
+            "target_resource_id": meta.get("target_resource_id", ""),
+            "target_resource_name": meta.get("target_resource_name", ""),
+            "target_resource_group": meta.get("target_resource_group", ""),
+            "target_resource_type": meta.get("target_resource_type", ""),
+            "target_subscription": meta.get("target_subscription", ""),
         }
 
     async def get_comments(self, work_item_id: int) -> list[dict]:
@@ -117,7 +166,7 @@ class AdoClient:
         return r.json()
 
     async def update_state(self, work_item_id: int, state: str) -> dict:
-        """Update System.State field (New / Active / Resolved / Escalated)."""
+        """Update System.State to a workflow-specific value configured for this project."""
         url = f"{self._base}/{self._project}/_apis/wit/workitems/{work_item_id}"
         r = await self._client.patch(
             url,
@@ -135,16 +184,19 @@ class AdoClient:
         tags: str = "agent:run",
     ) -> dict:
         """
-        Create a new Bug work item from an incoming alert.
-        Called by the alert intake path.
+        Create a new work item from an incoming alert.
+        Uses the configured work item type and its corresponding workflow defaults.
         """
-        url = f"{self._base}/{self._project}/_apis/wit/workitems/$Bug"
+        wit = settings.ado_work_item_type
+        initial_state = ado_state_for_stage("queued", work_item_type=wit, allow_missing=True)
+        url = f"{self._base}/{self._project}/_apis/wit/workitems/${wit}"
         body = [
             {"op": "add", "path": "/fields/System.Title",       "value": title},
             {"op": "add", "path": "/fields/System.Description", "value": description_html},
             {"op": "add", "path": "/fields/System.Tags",        "value": tags},
-            {"op": "add", "path": "/fields/System.State",       "value": "New"},
         ]
+        if initial_state:
+            body.append({"op": "add", "path": "/fields/System.State", "value": initial_state})
         r = await self._client.post(
             url,
             params={"api-version": _API},
@@ -191,6 +243,57 @@ def validate_service_hook_signature(
     return valid
 
 
+def ado_state_map(work_item_type: str | None = None) -> dict[AdoWorkflowStage, str]:
+    """
+    Resolve the ADO workflow states used by the agent.
+
+    Defaults are derived from the selected work item type, and each stage can be
+    overridden explicitly via environment variables for custom workflows.
+    """
+    resolved_type = (work_item_type or settings.ado_work_item_type).strip().lower()
+    states = dict(_DEFAULT_STATES_BY_WORK_ITEM_TYPE.get(resolved_type, {}))
+
+    overrides: dict[AdoWorkflowStage, str] = {
+        "queued": settings.ado_state_queued.strip(),
+        "investigating": settings.ado_state_investigating.strip(),
+        "awaiting_approval": settings.ado_state_awaiting_approval.strip(),
+        "resolved": settings.ado_state_resolved.strip(),
+        "escalated": settings.ado_state_escalated.strip(),
+    }
+    for stage, state in overrides.items():
+        if state:
+            states[stage] = state
+
+    return states
+
+
+def ado_state_for_stage(
+    stage: AdoWorkflowStage,
+    *,
+    work_item_type: str | None = None,
+    allow_missing: bool = False,
+) -> str | None:
+    """
+    Return the configured ADO System.State for a lifecycle stage.
+
+    For unknown custom workflows, `queued` may be omitted so ADO applies the
+    work item's default initial state. Other stages require either a known work
+    item type default or explicit `ADO_STATE_*` overrides.
+    """
+    state = ado_state_map(work_item_type).get(stage, "").strip()
+    if state:
+        return state
+    if allow_missing:
+        return None
+
+    wit = work_item_type or settings.ado_work_item_type
+    msg = (
+        f"No Azure DevOps state is configured for stage '{stage}' and work item type "
+        f"{wit!r}. Set the corresponding ADO_STATE_* environment variables."
+    )
+    raise ValueError(msg)
+
+
 # ── Alert normaliser helpers ───────────────────────────────────────────────────
 
 def build_bug_description(
@@ -203,6 +306,13 @@ def build_bug_description(
     failure_type: str = "unknown",
     target_table: str = "",
     source: str = "",
+    alert_rule: str = "",
+    incident_target: str = "",
+    target_resource_id: str = "",
+    target_resource_name: str = "",
+    target_resource_group: str = "",
+    target_resource_type: str = "",
+    target_subscription: str = "",
 ) -> str:
     """
     Build the HTML description for the ADO Bug work item.
@@ -216,11 +326,74 @@ def build_bug_description(
     escaped_failed_task = html.escape(str(failed_task))
     escaped_target_table = html.escape(str(target_table))
     escaped_source = html.escape(str(source))
+    escaped_alert_rule = html.escape(str(alert_rule))
+    escaped_incident_target = html.escape(str(incident_target))
+    escaped_target_resource_id = html.escape(str(target_resource_id))
+    escaped_target_resource_name = html.escape(str(target_resource_name))
+    escaped_target_resource_group = html.escape(str(target_resource_group))
+    escaped_target_resource_type = html.escape(str(target_resource_type))
+    escaped_target_subscription = html.escape(str(target_subscription))
     escaped_error_message = html.escape(str(error_message))
     workspace_row = (
         f'<tr><td><b>Workspace</b></td><td><a href="{escaped_workspace_href}">'
         f"{escaped_workspace_text}</a></td></tr>"
     )
+    extra_rows = []
+    if escaped_alert_rule:
+        extra_rows.append(f"<tr><td><b>Alert rule</b></td><td>{escaped_alert_rule}</td></tr>")
+    if escaped_incident_target:
+        extra_rows.append(
+            "<tr><td><b>Incident target</b></td><td><code>"
+            f"{escaped_incident_target}</code></td></tr>"
+        )
+    if escaped_target_resource_id:
+        extra_rows.append(
+            "<tr><td><b>Target resource ID</b></td><td><code>"
+            f"{escaped_target_resource_id}</code></td></tr>"
+        )
+    if escaped_target_resource_name:
+        extra_rows.append(
+            "<tr><td><b>Target resource name</b></td><td><code>"
+            f"{escaped_target_resource_name}</code></td></tr>"
+        )
+    if escaped_target_resource_group:
+        extra_rows.append(
+            "<tr><td><b>Target resource group</b></td><td><code>"
+            f"{escaped_target_resource_group}</code></td></tr>"
+        )
+    if escaped_target_resource_type:
+        extra_rows.append(
+            "<tr><td><b>Target resource type</b></td><td><code>"
+            f"{escaped_target_resource_type}</code></td></tr>"
+        )
+    if escaped_target_subscription:
+        extra_rows.append(
+            "<tr><td><b>Target subscription</b></td><td><code>"
+            f"{escaped_target_subscription}</code></td></tr>"
+        )
+    extra_rows_html = "\n".join(extra_rows)
+    metadata_lines = [
+        f"environment: {escaped_environment}",
+        f"workspace_url: {escaped_workspace_text}",
+        f"job_id: {escaped_job_id}",
+        f"run_id: {escaped_run_id}",
+        f"failed_task: {escaped_failed_task}",
+        f"target_table: {escaped_target_table}",
+        f"failure_type: {html.escape(str(failure_type))}",
+    ]
+    optional_metadata = {
+        "source": escaped_source,
+        "alert_rule": escaped_alert_rule,
+        "incident_target": escaped_incident_target,
+        "target_resource_id": escaped_target_resource_id,
+        "target_resource_name": escaped_target_resource_name,
+        "target_resource_group": escaped_target_resource_group,
+        "target_resource_type": escaped_target_resource_type,
+        "target_subscription": escaped_target_subscription,
+    }
+    for key, value in optional_metadata.items():
+        if value:
+            metadata_lines.append(f"{key}: {value}")
 
     html_desc = f"""<div>
 <h3>Pipeline Failure Report</h3>
@@ -232,6 +405,7 @@ def build_bug_description(
 <tr><td><b>Failed task</b></td><td><code>{escaped_failed_task}</code></td></tr>
 <tr><td><b>Target table</b></td><td><code>{escaped_target_table}</code></td></tr>
 <tr><td><b>Source</b></td><td>{escaped_source}</td></tr>
+{extra_rows_html}
 </table>
 
 <h4>Error Message</h4>
@@ -239,13 +413,7 @@ def build_bug_description(
 </div>
 
 <!-- agent-metadata
-environment: {escaped_environment}
-workspace_url: {escaped_workspace_text}
-job_id: {escaped_job_id}
-run_id: {escaped_run_id}
-failed_task: {escaped_failed_task}
-target_table: {escaped_target_table}
-failure_type: {html.escape(str(failure_type))}
+{chr(10).join(metadata_lines)}
 -->"""
     return html_desc
 
@@ -259,12 +427,3 @@ def _extract_tag(tags_str: str, pattern: str) -> str:
         if re.search(pattern, tag):
             return tag
     return ""
-
-
-def _extract_meta(html: str, key: str) -> str:
-    """Pull a value from the agent-metadata HTML comment block."""
-    block = re.search(r"<!--\s*agent-metadata(.*?)-->", html, re.DOTALL)
-    if not block:
-        return ""
-    match = re.search(rf"{re.escape(key)}:\s*(.+)", block.group(1))
-    return match.group(1).strip() if match else ""

@@ -21,6 +21,42 @@ from integrations.ado import AdoClient, build_bug_description
 log = structlog.get_logger()
 
 
+def _parse_azure_target(target: str) -> dict[str, str]:
+    raw_target = str(target).strip()
+    parsed = {
+        "incident_target": raw_target,
+        "target_resource_id": "",
+        "target_resource_name": raw_target,
+        "target_resource_group": "",
+        "target_resource_type": "",
+        "target_subscription": "",
+    }
+    if not raw_target.startswith("/"):
+        return parsed
+
+    parts = [part for part in raw_target.split("/") if part]
+    if len(parts) < 2 or parts[0].lower() != "subscriptions":
+        return parsed
+
+    parsed["target_resource_id"] = raw_target
+    parsed["target_subscription"] = parts[1]
+    for idx, part in enumerate(parts):
+        lowered = part.lower()
+        if lowered == "resourcegroups" and idx + 1 < len(parts):
+            parsed["target_resource_group"] = parts[idx + 1]
+        if lowered == "providers" and idx + 1 < len(parts):
+            provider_namespace = parts[idx + 1]
+            resource_segments = parts[idx + 2 :]
+            type_segments = resource_segments[0::2]
+            name_segments = resource_segments[1::2]
+            if type_segments:
+                parsed["target_resource_type"] = "/".join([provider_namespace, *type_segments])
+            if name_segments:
+                parsed["target_resource_name"] = "/".join(name_segments)
+            break
+    return parsed
+
+
 def detect_source(body: dict, headers: Mapping[str, str] | None = None) -> str:
     user_agent = ""
     if headers is not None:
@@ -144,6 +180,7 @@ def _parse_azure(body: dict) -> dict | None:
     rule = essentials.get("alertRule", "unknown")
     config_items = essentials.get("configurationItems") or ["unknown"]
     target = config_items[0]
+    target_meta = _parse_azure_target(target)
     desc = context.get("ResultDescription", "")
     sev = essentials.get("severity", "Sev3")
     error_msg = desc if desc else f"Azure Monitor alert fired: {rule}"
@@ -160,6 +197,8 @@ def _parse_azure(body: dict) -> dict | None:
             "run_id": essentials.get("firedDateTime", ""),
             "failed_task": target,
             "error_message": error_msg,
+            "alert_rule": rule,
+            **target_meta,
         },
     }
 
