@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ──────────────────────────────────────────────────────────────────
-    google_api_key: str = Field(..., description="Gemini API key from Google AI Studio")
+    google_api_key: str = Field(
+        "",
+        description="Gemini API key from Google AI Studio (required for worker, not intake)",
+    )
     gemini_model: str = Field(
         "gemini-2.5-flash",
         description="Model to use for the agent",
@@ -50,10 +53,55 @@ class Settings(BaseSettings):
         description="Shared secret for validating ADO Service Hook HMAC signatures",
     )
     ado_area_path: str = Field("", description="Optional area path filter for agent work items")
+    ado_work_item_type: str = Field(
+        "Issue",
+        description="Work item type for agent incidents. 'Bug' for Agile/Scrum, 'Issue' for Basic.",
+    )
+    ado_state_queued: str = Field(
+        "",
+        description=(
+            "Optional ADO System.State used when the agent creates or re-queues an incident. "
+            "Defaults by work item type if unset."
+        ),
+    )
+    ado_state_investigating: str = Field(
+        "",
+        description=(
+            "Optional ADO System.State used while the agent is investigating. "
+            "Defaults by work item type if unset."
+        ),
+    )
+    ado_state_awaiting_approval: str = Field(
+        "",
+        description=(
+            "Optional ADO System.State used when waiting for human approval. "
+            "Defaults by work item type if unset."
+        ),
+    )
+    ado_state_resolved: str = Field(
+        "",
+        description=(
+            "Optional ADO System.State used when the agent resolves an incident. "
+            "Defaults by work item type if unset."
+        ),
+    )
+    ado_state_escalated: str = Field(
+        "",
+        description=(
+            "Optional ADO System.State used when the agent escalates an incident. "
+            "Defaults by work item type if unset."
+        ),
+    )
 
     # ── Databricks ───────────────────────────────────────────────────────────
-    databricks_host: str = Field(..., description="e.g. https://adb-xxx.azuredatabricks.net")
-    databricks_token: str = Field(..., description="Service principal PAT or M2M OAuth token")
+    databricks_host: str = Field(
+        "",
+        description="e.g. https://adb-xxx.azuredatabricks.net (required for worker)",
+    )
+    databricks_token: str = Field(
+        "",
+        description="Service principal PAT or M2M OAuth token (required for worker)",
+    )
     databricks_warehouse_id: str = Field(
         "",
         description="SQL warehouse ID for system table queries",
@@ -96,8 +144,69 @@ class Settings(BaseSettings):
         description="Maximum lock renewal window for a single long-running worker execution.",
     )
 
+    # ── MLflow prompt registry ────────────────────────────────────────────────
+    mlflow_tracking_uri: str = Field(
+        "postgresql+psycopg://mlflow:mlflow@127.0.0.1:54329/mlflow",
+        description=(
+            "MLflow tracking URI used by the prompt registry. For local development we default "
+            "to a direct connection to the local PostgreSQL-backed MLflow store."
+        ),
+    )
+    mlflow_registry_uri: str = Field(
+        "",
+        description="Optional explicit MLflow registry URI. Defaults to mlflow_tracking_uri.",
+    )
+    mlflow_server_backend_store_uri: str = Field(
+        "postgresql+psycopg://mlflow:mlflow@127.0.0.1:54329/mlflow",
+        description=(
+            "Local/backend MLflow metadata database URI. Used when starting a self-hosted "
+            "MLflow server for prompt registry development."
+        ),
+    )
+    mlflow_server_uri: str = Field(
+        "http://127.0.0.1:5000",
+        description="Optional local MLflow server UI URI for manual inspection.",
+    )
+    mlflow_artifact_root: str = Field(
+        "./.mlflow/artifacts",
+        description=(
+            "Default artifact root for the local MLflow server. Keep this on the local "
+            "filesystem for now."
+        ),
+    )
+    prompt_registry_active_alias: str = Field(
+        "active",
+        description="MLflow alias used by the runtime when no prompt version is pinned.",
+    )
+    prompt_registry_auto_seed: bool = Field(
+        True,
+        description="Register bundled prompt definitions into MLflow on first use if missing.",
+    )
+    mlflow_runtime_tracing_enabled: bool = Field(
+        True,
+        description="Emit MLflow runtime traces for worker and graph execution.",
+    )
+    mlflow_tracing_experiment_name: str = Field(
+        "pipeline-resolver-runtime",
+        description="MLflow experiment used to persist runtime traces.",
+    )
+
     # ── Agent behaviour ──────────────────────────────────────────────────────
     max_iterations: int = Field(5, description="Hard stop on ReAct loop - prevents runaway costs")
+    azure_max_iterations: int = Field(
+        8,
+        description=(
+            "Higher reasoning budget for Azure-only investigations, which often need several "
+            "discovery hops before reaching a concrete diagnosis."
+        ),
+    )
+    post_write_followup_iterations: int = Field(
+        2,
+        description=(
+            "Extra reasoning steps allowed after an approved write executes so the agent can "
+            "confirm outcome instead of escalating immediately at the base limit."
+        ),
+    )
     max_attempts: int = Field(3, description="Max HITL retry attempts before escalation")
     checkpoint_ttl_days: int = Field(7, description="Days to retain LangGraph checkpoints in Neon")
 

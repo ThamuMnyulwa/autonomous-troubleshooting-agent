@@ -206,3 +206,18 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local MLflow prompt registry state
+.mlflow/
+.tmp-mlflow-*/
+mlflow.db
+*.db-shm
+*.db-wal
+
+# Terraform local state
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example

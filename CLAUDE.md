@@ -26,6 +26,8 @@ pytest tests/test_x.py::test_name   # single test
 uvicorn intake.api:app --reload --port 8080          # intake API
 JOB_PAYLOAD='{"work_item_id": 123}' python agents/worker.py  # one-off worker run
 python agents/worker.py                                      # queue-driven worker
+docker compose -f docker-compose.mlflow.yml up -d            # local MLflow Postgres
+./scripts/run_local_mlflow.sh                                # local MLflow server
 ```
 
 ## Architecture
@@ -55,7 +57,7 @@ Alert Sources → FastAPI alert route → ADO Bug work item
 - `config.py` — Pydantic Settings loading all config from env vars / `.env`.
 - `db.py` — Neon PostgreSQL layer with `AsyncConnectionPool`. Schema: `agent_state.agent_runs`. LangGraph checkpoints in `public.*`.
 - `mcp_client.py` — Dynamic MCP tool loader (Databricks, Azure, ADO servers via stdio transport).
-- `prompts.py` — Prompt builders wrapping all user content in UNTRUSTED markers to prevent prompt injection.
+- `prompts/` — MLflow-backed prompt builders and registry adapter. Bundled prompt definitions are seeded into a local PostgreSQL-backed MLflow prompt registry, and all user content is wrapped in UNTRUSTED markers to prevent prompt injection.
 
 ## Important Design Decisions
 
