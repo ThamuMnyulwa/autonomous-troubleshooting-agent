@@ -1,0 +1,18 @@
+services:
+  mlflow-db:
+    image: postgres:16
+    container_name: pipeline-resolver-mlflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mlflow
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: mlflow
+    ports:
+      - "54329:5432"
+    volumes:
+      - ./.mlflow/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
